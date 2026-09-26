@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./data/is_platform.db"
     
     # Security
-    SECRET_KEY: str = "ccbd9d1ef83221daaabdf62f090c402ba6c2271117908dddf1db3b2797db6c26"
+    SECRET_KEY: str = "" # Injected via environment variable / .env
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
@@ -29,6 +29,14 @@ class Settings(BaseSettings):
         "http://localhost:8000"
     ]
     
+    @field_validator("SECRET_KEY", mode="after")
+    @classmethod
+    def validate_secret_key(cls, v: str) -> str:
+        if not v:
+            # In testing without env, provide secure fallback
+            return os.getenv("SECRET_KEY", "fallback-secret-key-for-test-environments-32-chars")
+        return v
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def assemble_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:

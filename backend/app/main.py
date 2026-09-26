@@ -4,21 +4,21 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
 from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.config import settings
 from app.core.logging import logger
+from app.core.rate_limit import RateLimitMiddleware
 from app.api.router import api_router
 from app.db.session import engine
 from app.db.base import Base
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: ensure tables exist if not using migrations
     logger.info("Initializing IS Platform backend services...")
     Base.metadata.create_all(bind=engine)
     logger.info("Database schemas verified.")
     yield
-    # Shutdown
     logger.info("Shutting down IS Platform backend services...")
 
 app = FastAPI(
@@ -31,7 +31,7 @@ app = FastAPI(
     openapi_url="/api/openapi.json" if settings.ENVIRONMENT != "production" else None,
 )
 
-# Custom Middleware for Request ID & Security Headers
+# Custom Middleware for Request ID & OWASP Security Headers
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
@@ -43,18 +43,28 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         process_time = (time.time() - start_time) * 1000
         response.headers["X-Request-ID"] = request_id
         response.headers["X-Process-Time"] = f"{process_time:.2f}ms"
-        # OWASP Security Headers
+        
+        # Hardened OWASP Security Headers
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        response.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline';"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "img-src 'self' data:; "
+            "style-src 'self' 'unsafe-inline'; "
+            "script-src 'self'; "
+            "frame-ancestors 'none';"
+        )
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
         
         return response
 
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RateLimitMiddleware, max_requests=settings.RATE_LIMIT_PER_MINUTE, window_seconds=60)
 
-# CORS Middleware
+# CORS Middleware with strict origin enforcement
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
@@ -63,7 +73,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global safe exception handler: prevents internal stack traces in production
+# Request Validation Error Handler (Sanitizes Pydantic validation errors)
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    req_id = getattr(request.state, "request_id", "unknown")
+    sanitized_errors = []
+    for error in exc.errors():
+        loc = " -> ".join([str(l) for l in error.get("loc", [])])
+        msg = error.get("msg", "Validation error")
+        sanitized_errors.append({"field": loc, "message": msg})
+        
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "error": "Validation Error",
+            "message": "The request payload failed schema validation",
+            "details": sanitized_errors,
+            "request_id": req_id
+        }
+    )
+
+# Global safe exception handler: prevents internal stack traces in responses
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     req_id = getattr(request.state, "request_id", "unknown")
@@ -92,3 +122,8 @@ def root():
         "docs": "/api/docs" if settings.ENVIRONMENT != "production" else "Disabled in production",
         "health": "/api/v1/health"
     }
+
+# Endpoint for validating 500 error sanitization
+@app.get("/api/v1/simulate-error")
+def simulate_internal_error():
+    raise RuntimeError("Intentional error for verifying safe exception masking")

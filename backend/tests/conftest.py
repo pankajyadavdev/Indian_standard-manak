@@ -7,6 +7,13 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app.main import app
+from app.core.rate_limit import RateLimitMiddleware
+
+@pytest.fixture(autouse=True)
+def reset_rate_limits():
+    RateLimitMiddleware.reset()
+    yield
+    RateLimitMiddleware.reset()
 
 @pytest.fixture(scope="session")
 def client():
