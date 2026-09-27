@@ -9,9 +9,29 @@ from app.models.standard import Standard
 from app.models.audit import AuditLog
 from app.api.deps import get_current_user, get_client_ip
 from app.schemas.specification import SpecificationExtractionRequest, SpecificationExtractionResponse
+from app.schemas.rag import RAGQueryRequest, RAGQueryResponse
 from app.services.entity_extractor import extract_entities
+from app.services.rag_engine import rag_engine, INSUFFICIENT_EVIDENCE_MSG
 
 router = APIRouter(prefix="/analysis", tags=["Specification Analysis & Extraction"])
+
+@router.post("/rag-explain", response_model=RAGQueryResponse)
+def rag_explain(
+    req: RAGQueryRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Evidence-Grounded RAG Endpoint:
+    The system can ONLY explain retrieved evidence.
+    If evidence is absent, strictly returns 'Insufficient verified evidence.'
+    """
+    rag_res = rag_engine.generate_grounded_explanation(
+        db=db,
+        query=req.query,
+        document_id=req.document_id
+    )
+    return RAGQueryResponse(**rag_res.to_dict())
 
 @router.post("/extract-specifications", response_model=SpecificationExtractionResponse)
 def extract_specifications(

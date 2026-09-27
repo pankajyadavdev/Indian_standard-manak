@@ -93,7 +93,7 @@ class HybridSearchEngine:
         
         results = []
         for std, score in zip(standards, scores):
-            if score > 0.3: # Relevance threshold
+            if score > 0.45: # Semantic relevance threshold
                 results.append(SearchResult(
                     standard=std,
                     score=float(score),
@@ -166,20 +166,19 @@ class HybridSearchEngine:
                     "explanations": [res.explanation]
                 }
 
-        # Normalize final scores to 0.0 - 1.0 range
+        # Normalize final scores to 0.0 - 1.0 range against theoretical maximum
+        max_possible = (1.0 / (k_const + 1)) * 100
         combined = []
-        if scores_by_id:
-            max_score = max(item["score"] for item in scores_by_id.values()) or 1.0
-            for sid, item in scores_by_id.items():
-                norm_score = item["score"] / max_score
-                # Filter out unrelated standards below threshold
-                if norm_score >= min_score:
-                    combined.append(SearchResult(
-                        standard=item["standard"],
-                        score=norm_score,
-                        match_type="+".join(set(item["match_types"])),
-                        explanation="; ".join(item["explanations"])
-                    ))
+        for sid, item in scores_by_id.items():
+            norm_score = min(1.0, item["score"] / max_possible)
+            # Filter out unrelated standards below threshold
+            if norm_score >= min_score:
+                combined.append(SearchResult(
+                    standard=item["standard"],
+                    score=norm_score,
+                    match_type="+".join(set(item["match_types"])),
+                    explanation="; ".join(item["explanations"])
+                ))
 
         # Rerank by score descending
         combined.sort(key=lambda x: x.score, reverse=True)
