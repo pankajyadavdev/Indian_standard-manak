@@ -1,4 +1,3 @@
-import pytest
 
 def test_root_endpoint(client):
     response = client.get("/")

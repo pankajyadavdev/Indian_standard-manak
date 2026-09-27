@@ -1,5 +1,5 @@
 import re
-from typing import List, Dict, Any, Optional
+from typing import List, Dict
 from pydantic import BaseModel, Field
 
 class SpecificationEntities(BaseModel):

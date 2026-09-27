@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from jose import JWTError, ExpiredSignatureError
+from jwt import ExpiredSignatureError, InvalidTokenError as JWTError
 from app.db.session import get_db
 from app.core.security import decode_token
 from app.models.user import User
@@ -11,10 +11,7 @@ from app.models.user import User
 security_scheme = HTTPBearer(auto_error=False)
 
 def get_client_ip(request: Request) -> str:
-    """Extract client IP handling proxies."""
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    """Return the socket peer; forwarded headers are untrusted without proxy allowlisting."""
     return request.client.host if request.client else "unknown"
 
 def get_current_user(
@@ -63,7 +60,7 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user = db.query(User).filter(User.id == user_id, User.is_deleted == False).first()
+    user = db.query(User).filter(User.id == user_id, User.is_deleted.is_(False)).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

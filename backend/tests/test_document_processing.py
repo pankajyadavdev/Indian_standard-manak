@@ -4,15 +4,13 @@ import os
 from reportlab.pdfgen import canvas
 import docx
 import openpyxl
-from app.core.security import create_access_token
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.models.project import Project
 from app.services.document_processor import (
     sanitize_filename,
     validate_file_content,
-    DocumentValidationError,
-    chunk_text
+    DocumentValidationError
 )
 
 @pytest.fixture
@@ -22,7 +20,7 @@ def auth_header(client):
     RateLimitMiddleware.reset()
     resp = client.post("/api/v1/auth/login", json={
         "email": "officer@cpwd.gov.in",
-        "password": "Officer@12345"
+        "password": os.environ["TEST_DEMO_PASSWORD"]
     })
     assert resp.status_code == 200, f"Login failed: {resp.json()}"
     token = resp.json()["access_token"]

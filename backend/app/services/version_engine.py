@@ -1,7 +1,7 @@
 import re
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
-from app.models.standard import Standard, StandardVersion, Amendment
+from app.models.standard import Standard
 
 class VersionCheckResult:
     def __init__(
@@ -75,9 +75,8 @@ class VersionEngine:
         parsed = self.parse_standard_reference(raw_reference)
         code = parsed["standard_code"]
         cited_year = parsed["year"]
-        cited_amendment = parsed["amendment"]
 
-        std = db.query(Standard).filter(Standard.standard_code.ilike(code), Standard.is_deleted == False).first()
+        std = db.query(Standard).filter(Standard.standard_code.ilike(code), Standard.is_deleted.is_(False)).first()
         if not std:
             return VersionCheckResult(
                 standard_code=code,
@@ -195,7 +194,7 @@ class VersionEngine:
                     "severity": "CRITICAL",
                     "details": f"Tender cites contradictory versions for {code}: {', '.join([f'{code}:{y}' for y in sorted(years)])}.",
                     "cited_entries": [e["raw"] for e in entries],
-                    "recommendation": f"Harmonize all references to the latest operative BIS standard version."
+                    "recommendation": "Harmonize all references to the latest operative BIS standard version."
                 })
 
             # Check if any cited is superseded

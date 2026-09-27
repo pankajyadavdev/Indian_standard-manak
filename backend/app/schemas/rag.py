@@ -8,9 +8,9 @@ class EvidenceItem(BaseModel):
     clause: Optional[str] = None
 
 class RAGQueryRequest(BaseModel):
-    query: str = Field(..., min_length=3, description="Technical specification or compliance query")
-    document_id: Optional[str] = None
-    project_id: Optional[str] = None
+    query: str = Field(..., min_length=3, max_length=20000, description="Technical specification or compliance query")
+    document_id: Optional[str] = Field(None, max_length=36)
+    project_id: Optional[str] = Field(None, max_length=36)
 
 class RAGQueryResponse(BaseModel):
     query: str

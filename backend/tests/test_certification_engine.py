@@ -1,4 +1,5 @@
 import pytest
+import os
 from app.db.session import SessionLocal
 from app.services.certification_engine import certification_engine, COMPLIANCE_STATUS
 
@@ -8,7 +9,7 @@ def auth_header(client):
     RateLimitMiddleware.reset()
     resp = client.post("/api/v1/auth/login", json={
         "email": "officer@cpwd.gov.in",
-        "password": "Officer@12345"
+        "password": os.environ["TEST_DEMO_PASSWORD"]
     })
     token = resp.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
@@ -50,8 +51,6 @@ def test_mandatory_qco_no_clause(db_session):
 
 # 4. Non-mandatory (advisory) certification
 def test_advisory_certification(db_session):
-    from app.models.standard import Standard
-    from app.models.certification import Certification
     db = db_session
     # IS 2062 has advisory certification in seed data
     res = certification_engine.check_certification(db, "IS 2062")

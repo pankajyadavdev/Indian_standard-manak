@@ -1,7 +1,9 @@
 from datetime import datetime, timezone
+import os
 import bcrypt
+from email_validator import validate_email
 from app.db.session import SessionLocal
-from app.models.user import User, Role, Permission, Department, role_permissions
+from app.models.user import User, Role, Permission, Department
 from app.models.standard import Standard, StandardVersion, Amendment, StandardReference
 from app.models.certification import Certification
 from app.models.audit import AuditLog
@@ -10,7 +12,7 @@ def hash_password(password: str) -> str:
     salt = bcrypt.gensalt(rounds=12)
     return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
 
-def seed_database():
+def seed_database(include_demo_users: bool = False, demo_password: str | None = None):
     db = SessionLocal()
     try:
         # Check if already seeded
@@ -101,13 +103,32 @@ def seed_database():
             depts[d_code] = dept
         db.flush()
 
-        # 4. Users (Passwords: Admin@12345, Officer@12345, Reviewer@12345, Auditor@12345)
-        users_data = [
-            ("admin@is-platform.gov.in", "Admin@12345", "Super Administrator", roles["admin"], None),
-            ("officer@cpwd.gov.in", "Officer@12345", "Rajesh Kumar (Executive Engineer)", roles["procurement_officer"], depts["CPWD"]),
-            ("reviewer@bis.gov.in", "Reviewer@12345", "Dr. Anita Sharma (Principal Scientist)", roles["technical_reviewer"], depts["CPWD"]),
-            ("auditor@cag.gov.in", "Auditor@12345", "Vikramaditya Rao (Senior Audit Officer)", roles["auditor"], None),
-        ]
+        # Test fixtures can seed demo identities with a per-run password; app defaults create only a bootstrap administrator.
+        users_data = []
+        if include_demo_users:
+            password_bytes = (demo_password or "").encode("utf-8")
+            if len(password_bytes) < 16 or len(password_bytes) > 72:
+                raise ValueError("A generated demo password of 16-72 UTF-8 bytes is required")
+            users_data = [
+                ("admin@is-platform.gov.in", demo_password, "Super Administrator", roles["admin"], None),
+                ("officer@cpwd.gov.in", demo_password, "Rajesh Kumar (Executive Engineer)", roles["procurement_officer"], depts["CPWD"]),
+                ("reviewer@bis.gov.in", demo_password, "Dr. Anita Sharma (Principal Scientist)", roles["technical_reviewer"], depts["CPWD"]),
+                ("auditor@cag.gov.in", demo_password, "Vikramaditya Rao (Senior Audit Officer)", roles["auditor"], None),
+            ]
+        else:
+            email = os.getenv("BOOTSTRAP_ADMIN_EMAIL", "").strip().lower()
+            password = os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "")
+            full_name = os.getenv("BOOTSTRAP_ADMIN_NAME", "Platform Administrator").strip()
+            try:
+                email = validate_email(email, check_deliverability=False).normalized
+            except Exception as exc:
+                raise ValueError("A valid BOOTSTRAP_ADMIN_EMAIL is required when demo users are disabled") from exc
+            password_bytes = password.encode("utf-8")
+            if len(password_bytes) < 16 or len(password_bytes) > 72:
+                raise ValueError("BOOTSTRAP_ADMIN_PASSWORD must contain 16-72 UTF-8 bytes")
+            if len(full_name) < 2 or len(full_name) > 255 or any(ord(char) < 32 for char in full_name):
+                raise ValueError("BOOTSTRAP_ADMIN_NAME must contain 2-255 printable characters")
+            users_data.append((email, password, full_name, roles["admin"], None))
         for email, pwd, name, role, dept in users_data:
             user = User(
                 email=email,
@@ -342,7 +363,7 @@ def seed_database():
         db.add(AuditLog(
             action="system.database_seeded",
             entity_type="system",
-            details='{"event": "Initial seed complete with roles, users, BIS standards, versions, amendments, and QCO rules"}'
+            details='{"event": "Initial seed complete with roles, catalogue, versions, amendments, and QCO rules"}'
         ))
 
         db.commit()

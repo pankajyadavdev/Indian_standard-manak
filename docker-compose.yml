@@ -1,0 +1,112 @@
+services:
+  backend:
+    image: ${BACKEND_IMAGE:-is-platform/backend:local}
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY to a random secret of at least 32 characters}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:?Set a real bootstrap admin email}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?Set a random 16-72 byte bootstrap password}
+      BOOTSTRAP_ADMIN_NAME: ${BOOTSTRAP_ADMIN_NAME:-Platform Administrator}
+      DATABASE_URL: postgresql+psycopg://is_platform:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD to a long URL-safe password}@db:5432/is_platform
+      UPLOAD_DIR: /app/data/uploads
+      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-50}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-120}
+      EMBEDDING_MODEL_NAME: all-MiniLM-L6-v2
+      EMBEDDING_MODEL_REVISION: 1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+    volumes:
+      - upload-data:/app/data/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "8000"
+    networks:
+      - platform
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/ready', timeout=4)); assert d['status']=='READY'"
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+    restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - >-
+        set -eu;
+        alembic upgrade head;
+        python -c 'from app.db.seed import seed_database; seed_database(include_demo_users=False)';
+        python -m app.db.seed_relationships;
+        unset BOOTSTRAP_ADMIN_EMAIL BOOTSTRAP_ADMIN_PASSWORD BOOTSTRAP_ADMIN_NAME;
+        exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+          --proxy-headers --forwarded-allow-ips=172.29.0.0/24
+
+  frontend:
+    image: ${FRONTEND_IMAGE:-is-platform/frontend:local}
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - platform
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+      - /var/cache/nginx:rw,noexec,nosuid,size=16m
+      - /var/run:rw,noexec,nosuid,size=4m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
+  db:
+    image: postgres:17.11-alpine3.24
+    environment:
+      POSTGRES_DB: is_platform
+      POSTGRES_USER: is_platform
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD to a long URL-safe password}
+    volumes:
+      - database-data:/var/lib/postgresql/data
+    networks:
+      - platform
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U is_platform -d is_platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+networks:
+  platform:
+    ipam:
+      config:
+        - subnet: 172.29.0.0/24
+
+volumes:
+  database-data:
+  upload-data:

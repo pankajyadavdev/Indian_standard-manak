@@ -12,7 +12,6 @@ Rules:
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 from app.models.standard import Standard
-from app.models.certification import Certification
 
 COMPLIANCE_STATUS = {
     "MANDATORY_COMPLIANT": "MANDATORY_COMPLIANT",    # QCO/mandatory standard cited correctly
@@ -72,7 +71,7 @@ class CertificationEngine:
         """Evaluate whether the standard cited in a tender meets certification requirements."""
         std = db.query(Standard).filter(
             Standard.standard_code.ilike(standard_code),
-            Standard.is_deleted == False
+            Standard.is_deleted.is_(False)
         ).first()
 
         if not std:

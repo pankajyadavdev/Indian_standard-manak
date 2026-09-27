@@ -44,7 +44,7 @@ class Evidence(Base, TimestampMixin):
     clause_number = Column(String(100), nullable=True)
     confidence_score = Column(Float, nullable=False)
     evidence_type = Column(String(50), nullable=False, index=True)
-    # tender_requirement, standard_clause, test_requirement, certification_order
+    # tender_requirement, standard_catalog_scope, test_requirement, certification_order
 
     recommendation = relationship("Recommendation", back_populates="evidence_items")
     document = relationship("Document", back_populates="evidence_items")

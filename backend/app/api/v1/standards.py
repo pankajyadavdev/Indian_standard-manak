@@ -1,13 +1,16 @@
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+import hashlib
+import time
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.orm import Session
 from app.db.session import get_db
-from app.models.standard import Standard, StandardVersion, Amendment, StandardReference
-from app.models.certification import Certification
+from app.models.standard import Standard
 from app.models.user import User
 from app.api.deps import get_current_user
+from app.core.audit import record_activity
+from app.core.metrics import record_ai_operation
 from app.schemas.search import SearchRequest, SearchResponse, SearchResultItem
-from app.services.search_service import search_engine, calculate_ir_metrics
+from app.services.search_service import search_engine
 from app.services.relationship_engine import relationship_engine
 from app.services.version_engine import version_engine
 
@@ -70,7 +73,7 @@ def list_standards(
     db: Session = Depends(get_db)
 ):
     """List BIS standards with optional category filtering."""
-    q = db.query(Standard).filter(Standard.is_deleted == False)
+    q = db.query(Standard).filter(Standard.is_deleted.is_(False))
     if category:
         q = q.filter(Standard.category.ilike(f"%{category}%"))
     total = q.count()
@@ -94,7 +97,7 @@ def list_standards(
 @router.get("/{standard_id}")
 def get_standard_details(standard_id: str, db: Session = Depends(get_db)):
     """Retrieve full standard details including versions, amendments, references, and certifications."""
-    std = db.query(Standard).filter(Standard.id == standard_id, Standard.is_deleted == False).first()
+    std = db.query(Standard).filter(Standard.id == standard_id, Standard.is_deleted.is_(False)).first()
     if not std:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Standard not found")
 
@@ -161,6 +164,7 @@ def get_standard_details(standard_id: str, db: Session = Depends(get_db)):
 @router.post("/search", response_model=SearchResponse)
 def search_standards(
     req: SearchRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -173,6 +177,7 @@ def search_standards(
     5. Hybrid search (RRF fusion)
     6. Reranking and unrelated standard pruning
     """
+    started = time.perf_counter()
     stype = req.search_type.lower()
     if stype == "exact":
         results = search_engine.exact_search(db, req.query)
@@ -190,9 +195,21 @@ def search_standards(
         )
 
     items = [SearchResultItem(**r.to_dict()) for r in results]
-    return SearchResponse(
+    response = SearchResponse(
         query=req.query,
         search_type=stype,
         total_results=len(items),
         results=items
     )
+    record_activity(
+        db, request, current_user, "search.standards", "standards_query",
+        details={
+            "search_type": stype,
+            "query_length": len(req.query),
+            "query_sha256": hashlib.sha256(req.query.encode("utf-8")).hexdigest(),
+            "result_count": len(items),
+        },
+    )
+    db.commit()
+    record_ai_operation("standards_search", (time.perf_counter() - started) * 1000)
+    return response

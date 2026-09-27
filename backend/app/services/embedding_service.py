@@ -1,31 +1,56 @@
 import numpy as np
 import faiss
-from typing import List, Dict, Any, Optional
+import hashlib
+import re
+import threading
+from typing import List, Dict, Any
 from app.core.config import settings
 from app.core.logging import logger
 
 _model = None
+_model_lock = threading.Lock()
+
+
+def embedding_status() -> str:
+    if _model is None:
+        return "not_loaded"
+    if _model == "fallback":
+        return "lexical_fallback"
+    return "ready"
 
 def get_embedding_model():
-    """Lazy load SentenceTransformer model or fallback to hash-based embeddings."""
+    """Lazy load the pinned SentenceTransformer model or use a lexical fallback."""
     global _model
     if _model is None:
-        try:
-            from sentence_transformers import SentenceTransformer
-            # Load local model or download lightweight 384-d model
-            _model = SentenceTransformer(settings.EMBEDDING_MODEL_NAME)
-            logger.info(f"Loaded embedding model: {settings.EMBEDDING_MODEL_NAME}")
-        except Exception as e:
-            logger.warning(f"Could not load SentenceTransformer ({e}). Using deterministic embedding fallback.")
-            _model = "fallback"
+        with _model_lock:
+            if _model is None:
+                try:
+                    from sentence_transformers import SentenceTransformer
+                    _model = SentenceTransformer(
+                        settings.EMBEDDING_MODEL_NAME,
+                        revision=settings.EMBEDDING_MODEL_REVISION,
+                    )
+                    logger.info(f"Loaded embedding model: {settings.EMBEDDING_MODEL_NAME}@{settings.EMBEDDING_MODEL_REVISION}")
+                except Exception as e:
+                    logger.warning(f"Could not load SentenceTransformer ({e}). Using deterministic lexical fallback.")
+                    _model = "fallback"
     return _model
 
 def generate_fallback_embedding(text: str, dim: int = 384) -> np.ndarray:
-    """Generate deterministic normalized pseudo-semantic vector from text hash."""
-    import hashlib
-    h = hashlib.sha256(text.encode("utf-8")).digest()
-    np.random.seed(int.from_bytes(h[:4], "big"))
-    vec = np.random.randn(dim).astype("float32")
+    """Generate a stable feature-hashed lexical vector when the model is unavailable."""
+    vec = np.zeros(dim, dtype="float32")
+    words = re.findall(r"\w+", text.casefold(), flags=re.UNICODE)
+    features = [(f"w:{word}", 1.0) for word in words]
+    for word in words:
+        if len(word) >= 3:
+            features.extend((f"c:{word[index:index + 3]}", 0.2) for index in range(len(word) - 2))
+    if not features:
+        features = [("empty:" + text, 1.0)]
+    for feature, weight in features:
+        digest = hashlib.blake2b(feature.encode("utf-8"), digest_size=8).digest()
+        index = int.from_bytes(digest[:4], "big") % dim
+        sign = 1.0 if digest[4] & 1 else -1.0
+        vec[index] += sign * weight
     norm = np.linalg.norm(vec)
     return vec / norm if norm > 0 else vec
 
@@ -39,7 +64,12 @@ def embed_texts(texts: List[str]) -> np.ndarray:
     model = get_embedding_model()
     if model != "fallback":
         try:
-            embeddings = model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
+            embeddings = model.encode(
+                texts,
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            )
             return embeddings.astype("float32")
         except Exception as e:
             logger.error(f"Embedding generation failed: {e}. Falling back to deterministic vectors.")

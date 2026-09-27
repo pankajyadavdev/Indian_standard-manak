@@ -1,10 +1,6 @@
 import pytest
+import os
 from app.services.entity_extractor import extract_entities
-from app.db.session import SessionLocal
-from app.models.user import User
-from app.models.project import Project
-from app.models.document import Document
-from app.core.security import create_access_token
 
 @pytest.fixture
 def auth_header(client):
@@ -12,7 +8,7 @@ def auth_header(client):
     RateLimitMiddleware.reset()
     resp = client.post("/api/v1/auth/login", json={
         "email": "officer@cpwd.gov.in",
-        "password": "Officer@12345"
+        "password": os.environ["TEST_DEMO_PASSWORD"]
     })
     token = resp.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}

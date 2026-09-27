@@ -1,5 +1,6 @@
 import time
 import uuid
+import re
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
@@ -9,6 +10,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.config import settings
 from app.core.logging import logger
 from app.core.rate_limit import RateLimitMiddleware
+from app.core.metrics import record_http_request
 from app.api.router import api_router
 from app.db.session import engine
 from app.db.base import Base
@@ -34,7 +36,9 @@ app = FastAPI(
 # Custom Middleware for Request ID & OWASP Security Headers
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+        request_id = request.headers.get("X-Request-ID", "")
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", request_id):
+            request_id = str(uuid.uuid4())
         request.state.request_id = request_id
         start_time = time.time()
         
@@ -58,6 +62,23 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         )
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
+
+        route = getattr(request.scope.get("route"), "path", "unmatched")
+        if route != "unmatched" and request.url.path.startswith("/api/v1/"):
+            route = f"/api/v1{route}"
+        record_http_request(request.method, route, response.status_code, process_time / 1000.0)
+        logger.info(
+            "http.request",
+            extra={
+                "request_id": request_id,
+                "extra_data": {
+                    "method": request.method,
+                    "route": route,
+                    "status": response.status_code,
+                    "duration_ms": round(process_time, 2),
+                },
+            },
+        )
         
         return response
 
@@ -79,9 +100,9 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     req_id = getattr(request.state, "request_id", "unknown")
     sanitized_errors = []
     for error in exc.errors():
-        loc = " -> ".join([str(l) for l in error.get("loc", [])])
+        location = " -> ".join(str(part) for part in error.get("loc", []))
         msg = error.get("msg", "Validation error")
-        sanitized_errors.append({"field": loc, "message": msg})
+        sanitized_errors.append({"field": location, "message": msg})
         
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

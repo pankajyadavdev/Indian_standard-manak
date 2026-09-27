@@ -1,9 +1,11 @@
 import re
 import math
+import threading
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
-from app.models.standard import Standard, StandardVersion
+from app.models.standard import Standard
 from app.services.embedding_service import embed_texts
+from app.services.multilingual import expand_search_query
 import numpy as np
 
 class SearchResult:
@@ -29,17 +31,33 @@ class SearchResult:
 
 class HybridSearchEngine:
     def __init__(self):
-        pass
+        self._semantic_cache_lock = threading.Lock()
+        self._semantic_cache_signature = None
+        self._semantic_cache_embeddings = None
+
+    def _standard_embeddings(self, standards: List[Standard]) -> np.ndarray:
+        signature = tuple(
+            (std.id, std.standard_code, std.title, std.scope or "", std.status)
+            for std in standards
+        )
+        with self._semantic_cache_lock:
+            if signature != self._semantic_cache_signature:
+                texts = [f"{std.standard_code}: {std.title}. {std.scope or ''}" for std in standards]
+                self._semantic_cache_embeddings = embed_texts(texts)
+                self._semantic_cache_signature = signature
+            return self._semantic_cache_embeddings
 
     def exact_search(self, db: Session, query: str) -> List[SearchResult]:
         """Exact standard code match (e.g. 'IS 456' or 'IS 1786')."""
-        norm_query = re.sub(r"\s+", " ", query.strip().upper())
+        expanded_query = expand_search_query(query)
+        norm_query = re.sub(r"\s+", " ", expanded_query.strip().upper())
         # Find exact matches
         results = []
-        standards = db.query(Standard).filter(Standard.is_deleted == False).all()
+        standards = db.query(Standard).filter(Standard.is_deleted.is_(False)).all()
         for std in standards:
             code_upper = std.standard_code.upper()
-            if code_upper == norm_query or norm_query.startswith(code_upper):
+            code_pattern = rf"(?<![A-Z0-9]){re.escape(code_upper)}(?![A-Z0-9])"
+            if re.search(code_pattern, norm_query):
                 results.append(SearchResult(
                     standard=std,
                     score=1.0,
@@ -50,11 +68,12 @@ class HybridSearchEngine:
 
     def keyword_search(self, db: Session, query: str, category_filter: Optional[str] = None) -> List[SearchResult]:
         """Token-based BM25/keyword matching against title and scope."""
+        query = expand_search_query(query)
         tokens = [t.lower() for t in re.findall(r"\w+", query) if len(t) > 2]
         if not tokens:
             return []
 
-        q = db.query(Standard).filter(Standard.is_deleted == False)
+        q = db.query(Standard).filter(Standard.is_deleted.is_(False))
         if category_filter:
             q = q.filter(Standard.category.ilike(f"%{category_filter}%"))
         standards = q.all()
@@ -80,12 +99,12 @@ class HybridSearchEngine:
 
     def semantic_search(self, db: Session, query: str, top_k: int = 5) -> List[SearchResult]:
         """Dense embedding vector search comparing query against standards."""
-        standards = db.query(Standard).filter(Standard.is_deleted == False).all()
+        query = expand_search_query(query)
+        standards = db.query(Standard).filter(Standard.is_deleted.is_(False)).all()
         if not standards:
             return []
 
-        doc_texts = [f"{std.standard_code}: {std.title}. {std.scope or ''}" for std in standards]
-        std_embeddings = embed_texts(doc_texts)
+        std_embeddings = self._standard_embeddings(standards)
         query_vec = embed_texts([query])[0]
 
         # Cosine similarity

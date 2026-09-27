@@ -1,6 +1,7 @@
 import pytest
+import os
 from datetime import timedelta
-from app.core.security import create_access_token, create_refresh_token
+from app.core.security import create_access_token
 from app.db.session import SessionLocal
 from app.models.user import User
 
@@ -20,7 +21,7 @@ def unlock_test_users():
 def test_valid_login(client):
     response = client.post("/api/v1/auth/login", json={
         "email": "officer@cpwd.gov.in",
-        "password": "Officer@12345"
+        "password": os.environ["TEST_DEMO_PASSWORD"]
     })
     assert response.status_code == 200
     data = response.json()
@@ -65,7 +66,7 @@ def test_account_lockout(client):
     # 6th attempt while locked should return 403 Forbidden
     resp6 = client.post("/api/v1/auth/login", json={
         "email": "auditor@cag.gov.in",
-        "password": "Auditor@12345"  # even with correct password!
+            "password": os.environ["TEST_DEMO_PASSWORD"]  # even with correct password!
     })
     assert resp6.status_code == 403
     assert "Account locked due to multiple failed login attempts" in resp6.json()["detail"]
@@ -94,7 +95,7 @@ def test_role_violation(client):
     # Login as procurement officer
     login_resp = client.post("/api/v1/auth/login", json={
         "email": "officer@cpwd.gov.in",
-        "password": "Officer@12345"
+        "password": os.environ["TEST_DEMO_PASSWORD"]
     })
     token = login_resp.json()["access_token"]
 
@@ -109,7 +110,7 @@ def test_admin_access_success(client):
     # Login as admin
     login_resp = client.post("/api/v1/auth/login", json={
         "email": "admin@is-platform.gov.in",
-        "password": "Admin@12345"
+        "password": os.environ["TEST_DEMO_PASSWORD"]
     })
     admin_token = login_resp.json()["access_token"]
 
@@ -123,7 +124,7 @@ def test_admin_access_success(client):
 def test_token_refresh(client):
     login_resp = client.post("/api/v1/auth/login", json={
         "email": "officer@cpwd.gov.in",
-        "password": "Officer@12345"
+        "password": os.environ["TEST_DEMO_PASSWORD"]
     })
     refresh_token = login_resp.json()["refresh_token"]
 
@@ -136,7 +137,7 @@ def test_token_refresh(client):
 def test_logout_and_revocation(client):
     login_resp = client.post("/api/v1/auth/login", json={
         "email": "officer@cpwd.gov.in",
-        "password": "Officer@12345"
+        "password": os.environ["TEST_DEMO_PASSWORD"]
     })
     token = login_resp.json()["access_token"]
 

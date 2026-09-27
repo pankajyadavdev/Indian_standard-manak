@@ -1,5 +1,3 @@
-import pytest
-import time
 
 def test_owasp_security_headers_present(client):
     response = client.get("/api/v1/health")

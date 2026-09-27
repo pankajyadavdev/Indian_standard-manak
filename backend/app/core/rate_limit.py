@@ -1,9 +1,8 @@
 import time
-from typing import Dict, Tuple
+from typing import Dict
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from app.core.config import settings
 from app.core.logging import logger
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -47,12 +46,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         now = time.time()
         self._cleanup_old_records(now)
 
-        # Extract client IP
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            client_ip = forwarded.split(",")[0].strip()
-        else:
-            client_ip = request.client.host if request.client else "unknown"
+        # Do not allow callers to choose their own rate-limit key via X-Forwarded-For.
+        client_ip = request.client.host if request.client else "unknown"
 
         cutoff = now - self.window_seconds
         timestamps = self.request_records.get(client_ip, [])

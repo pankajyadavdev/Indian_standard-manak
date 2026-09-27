@@ -2,15 +2,17 @@ import os
 import uuid
 import json
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Request
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Request, Query
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.core.config import settings
+from app.core.audit import record_activity
+from app.core.access import visible_document_query
 from app.models.user import User
-from app.models.project import Project, Tender
+from app.models.project import Project
 from app.models.document import Document
 from app.models.audit import AuditLog
-from app.api.deps import get_current_user, get_client_ip
+from app.api.deps import get_client_ip, require_permission
 from app.schemas.document import DocumentResponse, DocumentDetailResponse, DocumentChunkResponse
 from app.services.document_processor import (
     sanitize_filename,
@@ -31,13 +33,39 @@ router = APIRouter(prefix="/documents", tags=["Document Processing Pipeline"])
 # In-memory document chunks cache
 document_chunks_store = {}
 
+
+@router.get("", response_model=List[DocumentResponse])
+def list_documents(
+    project_id: str = Query(..., min_length=1),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("document:read")),
+):
+    """List documents in a project the current user is allowed to read."""
+    project_query = db.query(Project).filter(Project.id == project_id, Project.is_deleted.is_(False))
+    if not current_user.role or current_user.role.name != "admin":
+        from sqlalchemy import or_
+        scope = [Project.created_by_id == current_user.id]
+        if current_user.department_id:
+            scope.append(Project.department_id == current_user.department_id)
+        project_query = project_query.filter(or_(*scope))
+    if not project_query.first():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    return (
+        db.query(Document)
+        .filter(Document.project_id == project_id, Document.is_deleted.is_(False))
+        .order_by(Document.created_at.desc())
+        .limit(100)
+        .all()
+    )
+
 @router.post("/upload", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
 async def upload_document(
     request: Request,
     file: UploadFile = File(...),
     project_id: str = Form(...),
     tender_id: Optional[str] = Form(None),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("document:upload")),
     db: Session = Depends(get_db)
 ):
     """
@@ -47,7 +75,14 @@ async def upload_document(
     ip_addr = get_client_ip(request)
 
     # Verify project exists
-    project = db.query(Project).filter(Project.id == project_id, Project.is_deleted == False).first()
+    project_query = db.query(Project).filter(Project.id == project_id, Project.is_deleted.is_(False))
+    if not current_user.role or current_user.role.name != "admin":
+        from sqlalchemy import or_
+        scope = [Project.created_by_id == current_user.id]
+        if current_user.department_id:
+            scope.append(Project.department_id == current_user.department_id)
+        project_query = project_query.filter(or_(*scope))
+    project = project_query.first()
     if not project:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -55,14 +90,14 @@ async def upload_document(
         )
 
     # 1. READ CONTENT
-    raw_content = await file.read()
+    max_upload_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    raw_content = await file.read(max_upload_bytes + 1)
     raw_filename = file.filename or "unknown_file.txt"
 
     # 2. VALIDATE (Format, Size, Magic Bytes)
     try:
         # Check size explicitly for 413
-        size_mb = len(raw_content) / (1024 * 1024)
-        if size_mb > settings.MAX_UPLOAD_SIZE_MB:
+        if len(raw_content) > max_upload_bytes:
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 detail=f"File exceeds maximum allowed size of {settings.MAX_UPLOAD_SIZE_MB}MB"
@@ -170,13 +205,17 @@ async def upload_document(
 @router.get("/{document_id}", response_model=DocumentDetailResponse)
 def get_document(
     document_id: str,
-    current_user: User = Depends(get_current_user),
+    request: Request,
+    current_user: User = Depends(require_permission("document:read")),
     db: Session = Depends(get_db)
 ):
     """Retrieve document metadata and text preview."""
-    doc = db.query(Document).filter(Document.id == document_id, Document.is_deleted == False).first()
+    doc = visible_document_query(db, current_user).filter(Document.id == document_id).first()
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    record_activity(db, request, current_user, "document.read", "document", doc.id)
+    db.commit()
 
     chunks = document_chunks_store.get(document_id, [])
     preview = doc.extracted_text[:1000] if doc.extracted_text else ""
@@ -201,13 +240,17 @@ def get_document(
 @router.get("/{document_id}/chunks", response_model=List[DocumentChunkResponse])
 def get_document_chunks(
     document_id: str,
-    current_user: User = Depends(get_current_user),
+    request: Request,
+    current_user: User = Depends(require_permission("document:read")),
     db: Session = Depends(get_db)
 ):
     """Retrieve indexed chunks for a document."""
-    doc = db.query(Document).filter(Document.id == document_id, Document.is_deleted == False).first()
+    doc = visible_document_query(db, current_user).filter(Document.id == document_id).first()
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    record_activity(db, request, current_user, "document.chunks_read", "document", doc.id)
+    db.commit()
 
     chunks = document_chunks_store.get(document_id, [])
     return [

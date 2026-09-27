@@ -1,4 +1,6 @@
 import pytest
+import os
+
 from app.db.session import SessionLocal
 from app.services.search_service import search_engine, calculate_ir_metrics
 
@@ -8,7 +10,7 @@ def auth_header(client):
     RateLimitMiddleware.reset()
     resp = client.post("/api/v1/auth/login", json={
         "email": "officer@cpwd.gov.in",
-        "password": "Officer@12345"
+        "password": os.environ["TEST_DEMO_PASSWORD"]
     })
     token = resp.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
@@ -86,7 +88,6 @@ def test_ir_metrics_evaluation(db_session):
         all_mrr.append(metrics["MRR"])
         all_ndcg.append(metrics["NDCG@3"])
 
-    avg_precision = sum(all_precision) / len(all_precision)
     avg_recall = sum(all_recall) / len(all_recall)
     avg_mrr = sum(all_mrr) / len(all_mrr)
     avg_ndcg = sum(all_ndcg) / len(all_ndcg)

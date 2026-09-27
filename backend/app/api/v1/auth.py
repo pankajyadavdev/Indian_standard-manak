@@ -1,9 +1,11 @@
 from datetime import datetime, timedelta, timezone
 import json
+import secrets
+from app.core.security import hash_password
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from jose import JWTError, ExpiredSignatureError
+from jwt import ExpiredSignatureError, InvalidTokenError as JWTError
 from app.db.session import get_db
 from app.core.config import settings
 from app.core.security import (
@@ -26,6 +28,7 @@ from app.schemas.auth import (
 from app.api.deps import get_current_user, require_roles, get_client_ip, security_scheme
 
 router = APIRouter(prefix="/auth", tags=["Authentication & Access Control"])
+_DUMMY_LOGIN_HASH = hash_password(secrets.token_urlsafe(32))
 
 @router.post("/login", response_model=TokenResponse)
 def login(login_data: LoginRequest, request: Request, db: Session = Depends(get_db)):
@@ -34,10 +37,10 @@ def login(login_data: LoginRequest, request: Request, db: Session = Depends(get_
     ip_addr = get_client_ip(request)
     user_agent = request.headers.get("User-Agent", "unknown")
 
-    user = db.query(User).filter(User.email == login_data.email.lower(), User.is_deleted == False).first()
+    user = db.query(User).filter(User.email == login_data.email.lower(), User.is_deleted.is_(False)).first()
     if not user:
         # Prevent user enumeration with constant-time check
-        verify_password("dummy", "$2b$12$e8XG2K7h1mC/sP9iYFsm5eLzL5lQhHwS9pPj8u8O5p9M4E5gC0a8S")
+        verify_password(login_data.password, _DUMMY_LOGIN_HASH)
         db.add(AuditLog(
             action="auth.login_failed_unknown_user",
             entity_type="user",
@@ -182,7 +185,7 @@ def refresh_token(
         )
 
     user_id = payload.get("sub")
-    user = db.query(User).filter(User.id == user_id, User.is_deleted == False).first()
+    user = db.query(User).filter(User.id == user_id, User.is_deleted.is_(False)).first()
     if not user or not user.is_active or user.is_locked:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

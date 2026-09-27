@@ -1,14 +1,8 @@
 import pytest
-from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from app.db.session import SessionLocal
-from app.models.user import User, Role, Permission, Department
-from app.models.project import Project, Tender
-from app.models.document import Document
-from app.models.standard import Standard, StandardVersion, Amendment, StandardReference
-from app.models.certification import Certification
-from app.models.recommendation import Recommendation, Evidence
-from app.models.review import Review
+from app.models.user import User, Role, Department
+from app.models.standard import Standard
 from app.models.audit import AuditLog
 
 @pytest.fixture

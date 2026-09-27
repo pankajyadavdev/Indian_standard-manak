@@ -1,7 +1,9 @@
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional
+import uuid
 import bcrypt
-from jose import jwt, JWTError, ExpiredSignatureError
+import jwt
+from jwt import InvalidTokenError as JWTError
 from app.core.config import settings
 
 # In-memory token blacklist for revoked tokens during logout
@@ -18,8 +20,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
     except Exception:
         return False
-
-import uuid
 
 def create_access_token(
     subject: str,

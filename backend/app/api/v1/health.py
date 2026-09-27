@@ -1,10 +1,14 @@
 from fastapi import APIRouter, Depends, status, Response
+from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.db.session import get_db
 from app.core.config import settings
+from app.core.metrics import render_metrics
+from app.api.deps import require_permission
+from app.models.user import User
+from app.services.embedding_service import embedding_status
 import os
-import shutil
 
 router = APIRouter(prefix="/health", tags=["Health & Observability"])
 
@@ -25,7 +29,8 @@ def readiness(response: Response, db: Session = Depends(get_db)):
     """
     checks = {
         "database": False,
-        "storage": False
+        "storage": False,
+        "embedding_model": embedding_status(),
     }
     
     # 1. Check Database connection
@@ -66,3 +71,9 @@ def system_info():
         "environment": settings.ENVIRONMENT,
         "model": settings.EMBEDDING_MODEL_NAME
     }
+
+
+@router.get("/metrics", response_class=PlainTextResponse)
+def metrics_endpoint(current_user: User = Depends(require_permission("audit:read"))):
+    """Expose aggregate Prometheus-format metrics to authorized operators."""
+    return PlainTextResponse(render_metrics(), media_type="text/plain; version=0.0.4; charset=utf-8")

@@ -1,4 +1,5 @@
 import pytest
+import os
 from app.db.session import SessionLocal
 from app.services.rag_engine import rag_engine, INSUFFICIENT_EVIDENCE_MSG
 from app.services.embedding_service import vector_index
@@ -9,7 +10,7 @@ def auth_header(client):
     RateLimitMiddleware.reset()
     resp = client.post("/api/v1/auth/login", json={
         "email": "officer@cpwd.gov.in",
-        "password": "Officer@12345"
+        "password": os.environ["TEST_DEMO_PASSWORD"]
     })
     token = resp.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}

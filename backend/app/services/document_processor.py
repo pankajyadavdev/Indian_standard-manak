@@ -3,10 +3,12 @@ import re
 import hashlib
 import io
 import zipfile
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple
 import pypdf
 import docx
 import openpyxl
+import pypdfium2
+import pytesseract
 from app.core.logging import logger
 
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".txt"}
@@ -17,6 +19,10 @@ MAGIC_BYTES = {
     ".docx": b"PK\x03\x04",
     ".xlsx": b"PK\x03\x04"
 }
+MAX_ARCHIVE_MEMBERS = 10000
+MAX_ARCHIVE_UNCOMPRESSED_BYTES = 250 * 1024 * 1024
+MAX_ARCHIVE_COMPRESSION_RATIO = 200
+MAX_OCR_PAGES = 50
 
 class DocumentValidationError(Exception):
     """Raised when document validation fails."""
@@ -87,11 +93,22 @@ def validate_file_content(filename: str, content: bytes, max_size_mb: int = 50) 
     if ext in {".docx", ".xlsx"}:
         try:
             with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                namelist = zf.namelist()
+                members = zf.infolist()
+                namelist = [member.filename for member in members]
                 if ext == ".docx" and not any(n.startswith("word/") for n in namelist):
                     raise DocumentValidationError("Invalid DOCX archive: missing word/ directory")
                 if ext == ".xlsx" and not any(n.startswith("xl/") for n in namelist):
                     raise DocumentValidationError("Invalid XLSX archive: missing xl/ directory")
+                if len(members) > MAX_ARCHIVE_MEMBERS:
+                    raise DocumentValidationError("Office archive contains too many entries")
+                total_uncompressed = sum(member.file_size for member in members)
+                if total_uncompressed > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+                    raise DocumentValidationError("Office archive expands beyond the allowed size")
+                for member in members:
+                    if member.file_size and member.compress_size == 0:
+                        raise DocumentValidationError("Office archive contains an invalid compressed entry")
+                    if member.compress_size and member.file_size / member.compress_size > MAX_ARCHIVE_COMPRESSION_RATIO:
+                        raise DocumentValidationError("Office archive compression ratio exceeds the allowed limit")
         except zipfile.BadZipFile:
             raise DocumentValidationError(f"Malformed or corrupted {ext} archive")
 
@@ -104,12 +121,13 @@ def compute_sha256(content: bytes) -> str:
 def extract_text_from_pdf(content: bytes) -> Tuple[str, int, bool]:
     """
     Extract text from PDF using pypdf.
-    Falls back to OCR simulation if extracted text is sparse (scanned document).
+    Rasterizes sparse pages and extracts their actual text with Tesseract OCR.
     Returns (extracted_text, total_pages, ocr_applied).
     """
     reader = pypdf.PdfReader(io.BytesIO(content))
     total_pages = len(reader.pages)
-    text_parts = []
+    page_texts = []
+    sparse_page_indexes = []
     sparse_pages = 0
 
     for idx, page in enumerate(reader.pages):
@@ -117,25 +135,48 @@ def extract_text_from_pdf(content: bytes) -> Tuple[str, int, bool]:
         cleaned = page_text.strip()
         if len(cleaned) < 50:
             sparse_pages += 1
-        text_parts.append(f"--- Page {idx + 1} ---\n" + cleaned)
+            sparse_page_indexes.append(idx)
+        page_texts.append(cleaned)
 
-    full_text = "\n\n".join(text_parts).strip()
     ocr_applied = False
 
-    # If > 50% of pages are sparse or empty, trigger OCR fallback
-    if total_pages > 0 and (sparse_pages / total_pages) > 0.5:
+    # If at least half the pages are sparse, OCR only those pages.
+    if total_pages > 0 and (sparse_pages / total_pages) >= 0.5:
+        if len(sparse_page_indexes) > MAX_OCR_PAGES:
+            raise DocumentValidationError(
+                f"Scanned PDF has {len(sparse_page_indexes)} pages requiring OCR; the limit is {MAX_OCR_PAGES}. Split the document before upload."
+            )
         ocr_applied = True
-        logger.info(f"PDF appears scanned ({sparse_pages}/{total_pages} sparse pages). Applying OCR pipeline...")
-        # OCR fallback extraction: If pytesseract / external binary is available or fallback OCR
-        # For documents where images contain text, append OCR text
-        ocr_text = []
-        for idx, page in enumerate(reader.pages):
-            page_text = page.extract_text() or ""
-            if len(page_text.strip()) < 50:
-                # Fallback OCR simulated extraction / page image OCR
-                page_text = f"[OCR Extracted Content for Scanned Page {idx + 1}]: High Strength Deformed Steel Reinforcement Bars conforming to IS 1786 Fe 500D with minimum elongation 16%."
-            ocr_text.append(f"--- Page {idx + 1} (OCR) ---\n" + page_text.strip())
-        full_text = "\n\n".join(ocr_text).strip()
+        logger.info("PDF appears scanned (%s/%s sparse pages). Running OCR.", sparse_pages, total_pages)
+        pdf = pypdfium2.PdfDocument(content)
+        recognized_pages = 0
+        try:
+            for idx in sparse_page_indexes:
+                page = pdf[idx]
+                bitmap = page.render(scale=2.0)
+                image = bitmap.to_pil()
+                try:
+                    recognized = pytesseract.image_to_string(image, lang="eng", timeout=30).strip()
+                finally:
+                    image.close()
+                    bitmap.close()
+                    page.close()
+                if not recognized:
+                    continue
+                page_texts[idx] = recognized
+                recognized_pages += 1
+            if recognized_pages == 0:
+                raise RuntimeError("OCR found no readable text on any sparse page")
+        except Exception as exc:
+            logger.warning("OCR failed while processing scanned PDF: %s", exc)
+            raise DocumentValidationError("Scanned PDF could not be read by OCR; verify Tesseract is available and the pages are legible.") from exc
+        finally:
+            pdf.close()
+
+    full_text = "\n\n".join(
+        f"--- Page {idx + 1}{' (OCR)' if idx in sparse_page_indexes and ocr_applied else ''} ---\n{text}"
+        for idx, text in enumerate(page_texts)
+    ).strip()
 
     return full_text, total_pages, ocr_applied
 

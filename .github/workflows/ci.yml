@@ -1,0 +1,227 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy the verified commit to the protected production environment
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend lint, migration, tests, and dependency audit
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.11-alpine3.24
+        env:
+          POSTGRES_USER: is_platform
+          POSTGRES_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+          POSTGRES_DB: is_platform
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U is_platform -d is_platform"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: sqlite:////tmp/is-platform-ci.sqlite3
+      UPLOAD_DIR: /tmp/is-platform-ci-uploads
+      ENVIRONMENT: test
+      HF_HOME: ${{ runner.temp }}/huggingface
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend and CI tools
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install ruff==0.16.9 pip-audit==2.10.1 bandit==1.9.2
+
+      - name: Lint backend
+        working-directory: backend
+        run: ruff check app tests scripts --select E4,E7,E9,F
+
+      - name: Static security scan
+        working-directory: backend
+        run: bandit -r app -ll
+
+      - name: Audit Python dependencies
+        working-directory: backend
+        run: pip-audit --strict -r requirements.txt
+
+      - name: Warm the pinned embedding model
+        working-directory: backend
+        run: >-
+          python -c "from sentence_transformers import SentenceTransformer;
+          SentenceTransformer('all-MiniLM-L6-v2',
+          revision='1110a243fdf4706b3f48f1d95db1a4f5529b4d41')"
+
+      - name: Migrate and seed clean PostgreSQL
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg://is_platform:${{ github.run_id }}-${{ github.run_attempt }}@localhost:5432/is_platform
+        run: |
+          export BOOTSTRAP_ADMIN_EMAIL=ci-bootstrap@example.com
+          export BOOTSTRAP_ADMIN_NAME="CI Migration Administrator"
+          export BOOTSTRAP_ADMIN_PASSWORD="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+          python -m alembic upgrade head
+          python -c "from app.db.seed import seed_database; seed_database(include_demo_users=False)"
+          python -c "from app.db.seed_relationships import seed_extended_relationships; seed_extended_relationships()"
+          unset BOOTSTRAP_ADMIN_EMAIL BOOTSTRAP_ADMIN_NAME BOOTSTRAP_ADMIN_PASSWORD
+
+      - name: Prepare isolated test database
+        working-directory: backend
+        run: |
+          export TEST_DEMO_PASSWORD="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+          printf 'TEST_DEMO_PASSWORD=%s\n' "$TEST_DEMO_PASSWORD" >> "$GITHUB_ENV"
+          python -c "import app.models; from app.db.base import Base; from app.db.session import engine; Base.metadata.create_all(bind=engine)"
+          python -c "import os; from app.db.seed import seed_database; seed_database(include_demo_users=True, demo_password=os.environ['TEST_DEMO_PASSWORD'])"
+          python -c "from app.db.seed_relationships import seed_extended_relationships; seed_extended_relationships()"
+
+      - name: Install OCR runtime for document processing tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes tesseract-ocr
+
+      - name: Run backend tests
+        working-directory: backend
+        run: python -m pytest -q
+
+  frontend:
+    name: Frontend build and dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+          package-manager-cache: false
+
+      - name: Install locked frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Audit frontend dependencies
+        working-directory: frontend
+        run: npm audit --audit-level=high
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+  container-scan:
+    name: Build and scan production images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    needs: [backend, frontend]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Build backend image
+        run: docker build --pull -t is-platform-backend:${{ github.sha }} ./backend
+
+      - name: Build frontend image
+        run: docker build --pull -t is-platform-frontend:${{ github.sha }} ./frontend
+
+      - name: Scan backend image
+        run: >-
+          docker run --rm
+          -v /var/run/docker.sock:/var/run/docker.sock
+          -v ${{ runner.temp }}/trivy-cache:/root/.cache/
+          aquasec/trivy:0.74.0 image
+          --ignore-unfixed
+          --exit-code 1
+          --severity CRITICAL,HIGH
+          is-platform-backend:${{ github.sha }}
+
+      - name: Scan frontend image
+        run: >-
+          docker run --rm
+          -v /var/run/docker.sock:/var/run/docker.sock
+          -v ${{ runner.temp }}/trivy-cache:/root/.cache/
+          aquasec/trivy:0.74.0 image
+          --ignore-unfixed
+          --exit-code 1
+          --severity CRITICAL,HIGH
+          is-platform-frontend:${{ github.sha }}
+
+      - name: Publish scanned images to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          image_prefix="ghcr.io/${GITHUB_REPOSITORY,,}"
+          printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker tag "is-platform-backend:${GITHUB_SHA}" "$image_prefix/backend:${GITHUB_SHA}"
+          docker tag "is-platform-frontend:${GITHUB_SHA}" "$image_prefix/frontend:${GITHUB_SHA}"
+          docker push "$image_prefix/backend:${GITHUB_SHA}"
+          docker push "$image_prefix/frontend:${GITHUB_SHA}"
+          docker logout ghcr.io
+
+  deploy:
+    name: Deploy verified image sources
+    runs-on: [self-hosted, is-platform-production]
+    needs: [backend, frontend, container-scan]
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy == true
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Check out verified commit
+        uses: actions/checkout@v7
+
+      - name: Deploy with Compose
+        env:
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          BOOTSTRAP_ADMIN_EMAIL: ${{ secrets.BOOTSTRAP_ADMIN_EMAIL }}
+          BOOTSTRAP_ADMIN_PASSWORD: ${{ secrets.BOOTSTRAP_ADMIN_PASSWORD }}
+          BOOTSTRAP_ADMIN_NAME: ${{ vars.BOOTSTRAP_ADMIN_NAME }}
+          HTTP_PORT: ${{ vars.HTTP_PORT }}
+          CORS_ORIGINS: ${{ vars.CORS_ORIGINS }}
+          MAX_UPLOAD_SIZE_MB: ${{ vars.MAX_UPLOAD_SIZE_MB }}
+          RATE_LIMIT_PER_MINUTE: ${{ vars.RATE_LIMIT_PER_MINUTE }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          image_prefix="ghcr.io/${GITHUB_REPOSITORY,,}"
+          export BACKEND_IMAGE="$image_prefix/backend:${GITHUB_SHA}"
+          export FRONTEND_IMAGE="$image_prefix/frontend:${GITHUB_SHA}"
+          printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker compose pull
+          docker logout ghcr.io
+          docker compose up --detach --no-build --remove-orphans

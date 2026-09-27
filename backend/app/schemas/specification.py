@@ -1,10 +1,10 @@
-from typing import List, Optional
-from pydantic import BaseModel, ConfigDict
+from typing import Optional
+from pydantic import BaseModel, ConfigDict, Field
 from app.services.entity_extractor import SpecificationEntities
 
 class SpecificationExtractionRequest(BaseModel):
-    document_id: Optional[str] = None
-    custom_text: Optional[str] = None
+    document_id: Optional[str] = Field(None, max_length=36)
+    custom_text: Optional[str] = Field(None, max_length=250000)
 
 class SpecificationExtractionResponse(BaseModel):
     document_id: Optional[str] = None

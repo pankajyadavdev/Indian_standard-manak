@@ -19,7 +19,7 @@ def test_check_current_version_no_year(db_session):
 
 # 2. Current version — correct year specified
 def test_check_current_version_with_correct_year(db_session):
-    from app.models.standard import Standard, StandardVersion
+    from app.models.standard import Standard
     db = db_session
     std = db.query(Standard).filter(Standard.standard_code == "IS 456").first()
     cur_ver = next((v for v in std.versions if v.is_current), None)
@@ -30,22 +30,11 @@ def test_check_current_version_with_correct_year(db_session):
 
 # 3. Superseded version detection
 def test_check_superseded_version(db_session):
-    from app.models.standard import Standard, StandardVersion
+    from app.models.standard import Standard
     db = db_session
     std = db.query(Standard).filter(Standard.standard_code == "IS 456").first()
-    cur_ver = next((v for v in std.versions if v.is_current), None)
-
-    # Create a historical superseded version
-    old_ver = StandardVersion(
-        standard_id=std.id,
-        year=1978,
-        version_label="IS 456:1978",
-        is_current=False
-    )
-    db.add(old_ver)
-    db.flush()
-    old_ver.superseded_by_id = cur_ver.id
-    db.commit()
+    old_ver = next((v for v in std.versions if v.year == 1978 and not v.is_current), None)
+    assert old_ver is not None
 
     res = version_engine.check_version(db, "IS 456:1978")
     assert res.status == "superseded"

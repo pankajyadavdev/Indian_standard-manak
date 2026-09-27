@@ -1,13 +1,9 @@
-import re
 from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy.orm import Session
 from app.models.standard import Standard
-from app.models.document import Document
 from app.services.search_service import search_engine
-from app.services.embedding_service import vector_index, embed_texts
-from app.core.config import settings
+from app.services.embedding_service import vector_index
 from app.core.logging import logger
-import numpy as np
 
 INSUFFICIENT_EVIDENCE_MSG = "Insufficient verified evidence."
 
@@ -118,7 +114,7 @@ class GroundedRAGEngine:
 
         # STRICT RULE CHECK: Absence of verified evidence
         if not evidence or len(evidence) == 0:
-            logger.info(f"RAG query '{query}' yielded zero verified evidence. Refusing answer.")
+            logger.info("RAG request yielded zero verified evidence. Refusing answer.")
             return RAGResponse(
                 query=query,
                 explanation=INSUFFICIENT_EVIDENCE_MSG,
@@ -130,7 +126,7 @@ class GroundedRAGEngine:
         # Generate factual explanation strictly restricted to retrieved evidence
         standard_codes = [s.standard_code for s in standards]
         explanation_lines = [
-            f"Based on verified technical evidence for query '{query}':"
+            "Based on verified technical evidence relevant to the submitted query:"
         ]
 
         for idx, ev in enumerate(evidence, 1):
