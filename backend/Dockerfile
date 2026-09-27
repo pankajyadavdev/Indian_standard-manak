@@ -1,4 +1,4 @@
-FROM python:3.13-slim-bookworm AS build
+FROM python:3.14-slim-bookworm AS build
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -15,7 +15,7 @@ RUN pip install --prefix=/install -r requirements.txt
 # Resolve the pinned model in the image build, so serving does not need model downloads.
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2', revision='1110a243fdf4706b3f48f1d95db1a4f5529b4d41')"
 
-FROM python:3.13-slim-bookworm AS runtime
+FROM python:3.14-slim-bookworm AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
