@@ -9,6 +9,7 @@ from app.api.deps import get_current_user
 from app.schemas.search import SearchRequest, SearchResponse, SearchResultItem
 from app.services.search_service import search_engine, calculate_ir_metrics
 from app.services.relationship_engine import relationship_engine
+from app.services.version_engine import version_engine
 
 router = APIRouter(prefix="/standards", tags=["Standards & Search Engine"])
 
@@ -33,6 +34,33 @@ def get_standard_relationships(
         "total_relationships": len(rels),
         "relationships": [r.to_dict() for r in rels]
     }
+
+@router.get("/check-version")
+def check_standard_version(
+    reference: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Check if a cited standard reference is current, superseded, or withdrawn.
+    Returns amendments, conflict alerts, and recommendation.
+    """
+    result = version_engine.check_version(db, reference)
+    return result.to_dict()
+
+@router.post("/detect-conflicts")
+def detect_version_conflicts(
+    payload: dict,
+    db: Session = Depends(get_db)
+):
+    """
+    Detect version conflicts within a list of standard references in a tender.
+    Identifies contradictory versions, superseded citations, and withdrawn standards.
+    """
+    references = payload.get("references", [])
+    if not references:
+        return {"conflicts": [], "total_conflicts": 0}
+    conflicts = version_engine.detect_version_conflicts(db, references)
+    return {"references": references, "total_conflicts": len(conflicts), "conflicts": conflicts}
 
 @router.get("")
 def list_standards(

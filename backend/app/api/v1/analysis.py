@@ -1,5 +1,5 @@
 import json
-from typing import Optional
+from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from app.db.session import get_db
@@ -12,6 +12,7 @@ from app.schemas.specification import SpecificationExtractionRequest, Specificat
 from app.schemas.rag import RAGQueryRequest, RAGQueryResponse
 from app.services.entity_extractor import extract_entities
 from app.services.rag_engine import rag_engine, INSUFFICIENT_EVIDENCE_MSG
+from app.services.certification_engine import certification_engine
 
 router = APIRouter(prefix="/analysis", tags=["Specification Analysis & Extraction"])
 
@@ -32,6 +33,22 @@ def rag_explain(
         document_id=req.document_id
     )
     return RAGQueryResponse(**rag_res.to_dict())
+
+@router.post("/certification-check")
+def certification_check(
+    payload: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Evaluate one or more standard codes for certification compliance (QCO/BIS rules).
+    Supply optional tender_clause_text to test for explicit ISI mark requirement.
+    """
+    standards = payload.get("standards", [])
+    tender_text = payload.get("tender_clause_text", None)
+    if not standards:
+        raise HTTPException(status_code=400, detail="'standards' list is required.")
+    return certification_engine.evaluate_tender(db, standards, tender_text)
 
 @router.post("/extract-specifications", response_model=SpecificationExtractionResponse)
 def extract_specifications(
