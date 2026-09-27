@@ -19,6 +19,8 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     except Exception:
         return False
 
+import uuid
+
 def create_access_token(
     subject: str,
     email: str,
@@ -26,7 +28,7 @@ def create_access_token(
     permissions: list[str],
     expires_delta: Optional[timedelta] = None
 ) -> str:
-    """Create a signed JWT access token."""
+    """Create a signed JWT access token with unique JTI."""
     now = datetime.now(timezone.utc)
     if expires_delta:
         expire = now + expires_delta
@@ -39,13 +41,14 @@ def create_access_token(
         "role": role,
         "permissions": permissions,
         "type": "access",
+        "jti": str(uuid.uuid4()),
         "iat": now,
         "exp": expire,
     }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 def create_refresh_token(subject: str, expires_delta: Optional[timedelta] = None) -> str:
-    """Create a signed JWT refresh token."""
+    """Create a signed JWT refresh token with unique JTI."""
     now = datetime.now(timezone.utc)
     if expires_delta:
         expire = now + expires_delta
@@ -55,6 +58,7 @@ def create_refresh_token(subject: str, expires_delta: Optional[timedelta] = None
     payload = {
         "sub": subject,
         "type": "refresh",
+        "jti": str(uuid.uuid4()),
         "iat": now,
         "exp": expire,
     }
@@ -69,3 +73,7 @@ def decode_token(token: str) -> Dict[str, Any]:
 def revoke_token(token: str) -> None:
     """Revoke a token so it cannot be used again."""
     revoked_tokens.add(token)
+
+def clear_revoked_tokens() -> None:
+    """Clear revoked tokens registry (used in test isolation)."""
+    revoked_tokens.clear()
