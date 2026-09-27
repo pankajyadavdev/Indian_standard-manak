@@ -8,8 +8,31 @@ from app.models.user import User
 from app.api.deps import get_current_user
 from app.schemas.search import SearchRequest, SearchResponse, SearchResultItem
 from app.services.search_service import search_engine, calculate_ir_metrics
+from app.services.relationship_engine import relationship_engine
 
 router = APIRouter(prefix="/standards", tags=["Standards & Search Engine"])
+
+@router.get("/{standard_code}/relationships")
+def get_standard_relationships(
+    standard_code: str,
+    relationship_type: Optional[str] = None,
+    graph: bool = False,
+    db: Session = Depends(get_db)
+):
+    """
+    Retrieve relationships for a given standard code.
+    Relationship types: normative, test_method, safety, installation, terminology, material, related.
+    If graph=True, returns full directed graph nodes and edges.
+    """
+    if graph:
+        return relationship_engine.get_relationship_graph(db, standard_code)
+    
+    rels = relationship_engine.get_relationships(db, standard_code, rel_type=relationship_type)
+    return {
+        "standard_code": standard_code,
+        "total_relationships": len(rels),
+        "relationships": [r.to_dict() for r in rels]
+    }
 
 @router.get("")
 def list_standards(
