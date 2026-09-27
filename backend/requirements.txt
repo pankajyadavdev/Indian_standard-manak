@@ -16,7 +16,7 @@ openpyxl==3.1.5
 Pillow==12.3.0
 pytesseract==0.3.13
 sentence-transformers==6.0.0
-faiss-cpu==1.15.0
+faiss-cpu==1.15.1
 scikit-learn==1.9.0
 numpy==2.5.2
 pandas==3.0.5
