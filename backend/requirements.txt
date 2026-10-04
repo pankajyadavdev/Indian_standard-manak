@@ -23,6 +23,6 @@ pandas==3.0.5
 httpx==0.28.1
 pytest==9.1.1
 pytest-asyncio==1.4.0
-python-dotenv==1.2.3
+python-dotenv==1.2.4
 reportlab==5.0.1
 email-validator==2.3.0
